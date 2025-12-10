@@ -9,9 +9,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 import matplotlib.pyplot as plt
 from datetime import datetime
-from mock_data import MockIBKRService
 from services.IKBRClient import IBKRClient
-from historical_json import router as historical_json_router
+from services.historical_json import router as historical_json_router
 from backtest import router as backtest_router
 
 

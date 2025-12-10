@@ -7,6 +7,9 @@ import time
 
 router = APIRouter()
 
+# Get the project root directory (two levels up from this file)
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 @router.post("/save_historical/{symbol}")
 async def save_historical(
     symbol: str = Path(..., description="Stock symbol"),
@@ -46,14 +49,16 @@ async def save_historical(
             }
             for bar in bars
         ]
+        # Always use project root for output directory
+        abs_output_dir = os.path.join(PROJECT_ROOT, output_dir)
         
         # Create output directory if it doesn't exist
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
+        if not os.path.exists(abs_output_dir):
+            os.makedirs(abs_output_dir)
         
         # Generate filename with ID
         filename = f"{symbol.lower()}_{file_id}.json"
-        filepath = os.path.join(output_dir, filename)
+        filepath = os.path.join(abs_output_dir, filename)
         
         # Create metadata object to save
         save_data = {
@@ -94,11 +99,12 @@ async def load_historical(
     """
     def load_data():
         # Find file by searching for the ID in the directory
-        if not os.path.exists(output_dir):
+        abs_output_dir = os.path.join(PROJECT_ROOT, output_dir)
+        if not os.path.exists(abs_output_dir):
             return {"error": "Historical data directory not found"}
         
         # Look for file matching the pattern *_{file_id}.json
-        matching_files = [f for f in os.listdir(output_dir) if f.endswith(f"_{file_id}.json")]
+        matching_files = [f for f in os.listdir(abs_output_dir) if f.endswith(f"_{file_id}.json")]
         
         if not matching_files:
             return {
@@ -106,7 +112,7 @@ async def load_historical(
                 "message": f"No saved data found with ID {file_id}"
             }
         
-        filepath = os.path.join(output_dir, matching_files[0])
+        filepath = os.path.join(abs_output_dir, matching_files[0])
         
         with open(filepath, "r") as f:
             data = json.load(f)
@@ -125,15 +131,16 @@ async def list_saved_historical(
     Lists all saved historical data JSON files with their metadata.
     """
     def list_files():
-        if not os.path.exists(output_dir):
+        abs_output_dir = os.path.join(PROJECT_ROOT, output_dir)
+        if not os.path.exists(abs_output_dir):
             return {"files": [], "message": "No historical data directory found"}
         
-        json_files = [f for f in os.listdir(output_dir) if f.endswith('.json')]
+        json_files = [f for f in os.listdir(abs_output_dir) if f.endswith('.json')]
         
         # Read metadata from each file
         file_list = []
         for filename in json_files:
-            filepath = os.path.join(output_dir, filename)
+            filepath = os.path.join(abs_output_dir, filename)
             try:
                 with open(filepath, "r") as f:
                     data = json.load(f)
@@ -153,7 +160,7 @@ async def list_saved_historical(
         return {
             "count": len(file_list),
             "files": file_list,
-            "directory": output_dir
+            "directory": abs_output_dir
         }
     
     result = await run_in_threadpool(list_files)
