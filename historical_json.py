@@ -83,6 +83,116 @@ async def save_historical(
     result = await run_in_threadpool(get_and_save)
     return JSONResponse(result)
 
+@router.get("/analyze_file/{file_id}")
+async def analyze_file(
+    file_id: str = Path(..., description="The ID of the saved file to analyze"),
+    output_dir: str = Query("historical_data", description="Directory where files are")
+):
+    """
+    Demonstrates how to process the 'data' array in Python.
+    Calculates average price, total volume, and identifies days where price closed higher than open.
+    """
+    def process_analysis():
+        # --- PART 1: Find and Load the File ---
+        if not os.path.exists(output_dir):
+            return {"error": "Directory not found"}
+            
+        # List comprehension to find the specific file by ID
+        target_files = [f for f in os.listdir(output_dir) if f.endswith(f"_{file_id}.json")]
+        
+        if not target_files:
+            return {"error": "File ID not found"}
+            
+        filepath = os.path.join(output_dir, target_files[0])
+        
+        with open(filepath, "r") as f:
+            full_json = json.load(f)
+            
+        # Get the list (array) of data points
+        # If "data" key is missing, return an empty list []
+        data_list = full_json.get("data", [])
+
+        # --- PART 2: Python Data Processing ---
+        
+        # Initialize variables to hold our calculations
+        total_close_price = 0
+        total_volume = 0
+        highest_volume_seen = 0
+        highest_volume_date = ""
+        green_days_count = 0  # Days where Close > Open
+
+        # We can create a new list to store simplified data
+        processed_days = []
+
+        # Iterate (loop) through each item in the list
+        # 'day_data' represents one dictionary inside the array
+        for day_data in data_list:
+            
+            # 1. Extract values using dictionary keys
+            close_price = day_data["close"]
+            open_price = day_data["open"]
+            volume = day_data["volume"]
+            date = day_data["date"]
+
+            # 2. Accumulate totals (for averages later)
+            total_close_price = total_close_price + close_price
+            total_volume = total_volume + volume
+
+            # 3. Check for specific conditions (Logic)
+            # Was this the highest volume day so far?
+            if volume > highest_volume_seen:
+                highest_volume_seen = volume
+                highest_volume_date = date
+
+            # Was it a "Green Day"? (price went up during the day)
+            is_green_day = close_price > open_price
+            if is_green_day:
+                green_days_count += 1
+            
+            # 4. Create a custom structure/transformation
+            # Let's say we want to calculate the 'spread' (High - Low)
+            spread = day_data["high"] - day_data["low"]
+            
+            # Store this processed info
+            processed_days.append({
+                "date": date,
+                "is_green": is_green_day,
+                "price_spread": round(spread, 2), # Round to 2 decimals
+                "close": close_price
+            })
+
+        # --- PART 3: Final aggregate calculations ---
+        
+        number_of_days = len(data_list)
+        
+        # Avoid division by zero if list is empty
+        if number_of_days > 0:
+            average_close = total_close_price / number_of_days
+            average_volume = total_volume / number_of_days
+        else:
+            average_close = 0
+            average_volume = 0
+
+        # Construct the final response
+        return {
+            "analysis_target": full_json.get("symbol"),
+            "total_days_analyzed": number_of_days,
+            "averages": {
+                "average_close_price": round(average_close, 2),
+                "average_daily_volume": int(average_volume)
+            },
+            "highlights": {
+                "highest_volume_date": highest_volume_date,
+                "highest_volume": highest_volume_seen,
+                "green_days_count": green_days_count,
+                "red_days_count": number_of_days - green_days_count
+            },
+            # Return our custom processed list (showing first 5 items to keep JSON small)
+            "processed_data_preview": processed_days[:5]
+        }
+
+    return await run_in_threadpool(process_analysis)
+
 
 @router.get("/load_historical/{file_id}")
 async def load_historical(
