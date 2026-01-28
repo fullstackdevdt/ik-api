@@ -133,7 +133,7 @@ async def analyze_file(
             open_price = day_data["open"]
             volume = day_data["volume"]
             date = day_data["date"]
-
+   
             # 2. Accumulate totals (for averages later)
             total_close_price = total_close_price + close_price
             total_volume = total_volume + volume
