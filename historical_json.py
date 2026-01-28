@@ -227,6 +227,69 @@ async def load_historical(
     return JSONResponse(result)
 
 
+# @router.get("/list_saved_historical")
+# async def list_saved_historical(
+#     output_dir: str = Query("historical_data", description="Directory where JSON files are stored")
+# ):
+#     """
+#     Lists all saved historical data JSON files with their metadata.
+#     """
+#     def list_files():
+#         if not os.path.exists(output_dir):
+#             return {"files": [], "message": "No historical data directory found"}
+        
+#         json_files = [f for f in os.listdir(output_dir) if f.endswith('.json')]
+        
+#         # Read metadata from each file
+#         file_list = []
+#         for filename in json_files:
+#             filepath = os.path.join(output_dir, filename)
+#             try:
+#                 with open(filepath, "r") as f:
+#                     data = json.load(f)
+#                     file_list.append({
+#                         "filename": filename,
+#                         "id": data.get("id"),
+#                         "symbol": data.get("symbol"),
+#                         "duration": data.get("duration"),
+#                         "bar_size": data.get("bar_size"),
+#                         "data_points": data.get("data_points"),
+#                         "created_at": data.get("created_at")
+#                     })
+#             except:
+#                 # Skip files that can't be read
+#                 pass
+        
+#         return {
+#             "count": len(file_list),
+#             "files": file_list,
+#             "directory": output_dir
+#         }
+    
+#     result = await run_in_threadpool(list_files)
+#     return JSONResponse(result)
+
+def get_file_metadata(filepath, filename):
+    """
+    Helper: Safely attempts to read a single file and return its metadata.
+    Returns None if reading fails.
+    """
+    try:
+        with open(filepath, "r") as f:
+            data = json.load(f)
+            return {
+                "filename": filename,
+                "id": data.get("id"),
+                "symbol": data.get("symbol"),
+                "duration": data.get("duration"),
+                "bar_size": data.get("bar_size"),
+                "data_points": data.get("data_points"),
+                "created_at": data.get("created_at")
+            }
+    except (json.JSONDecodeError, IOError):
+        # Explicitly catching specific errors is better than a bare 'except:'
+        return None
+
 @router.get("/list_saved_historical")
 async def list_saved_historical(
     output_dir: str = Query("historical_data", description="Directory where JSON files are stored")
@@ -234,31 +297,26 @@ async def list_saved_historical(
     """
     Lists all saved historical data JSON files with their metadata.
     """
-    def list_files():
+    def list_files_sync():
         if not os.path.exists(output_dir):
             return {"files": [], "message": "No historical data directory found"}
         
-        json_files = [f for f in os.listdir(output_dir) if f.endswith('.json')]
-        
-        # Read metadata from each file
         file_list = []
-        for filename in json_files:
+        
+        # Iterate over files
+        for filename in os.listdir(output_dir):
+            # Guard clause: Skip non-json files immediately (flattens logic)
+            if not filename.endswith('.json'):
+                continue
+                
             filepath = os.path.join(output_dir, filename)
-            try:
-                with open(filepath, "r") as f:
-                    data = json.load(f)
-                    file_list.append({
-                        "filename": filename,
-                        "id": data.get("id"),
-                        "symbol": data.get("symbol"),
-                        "duration": data.get("duration"),
-                        "bar_size": data.get("bar_size"),
-                        "data_points": data.get("data_points"),
-                        "created_at": data.get("created_at")
-                    })
-            except:
-                # Skip files that can't be read
-                pass
+            
+            # Delegate complexity to the helper
+            metadata = get_file_metadata(filepath, filename)
+            
+            # Only append if valid
+            if metadata:
+                file_list.append(metadata)
         
         return {
             "count": len(file_list),
@@ -266,5 +324,5 @@ async def list_saved_historical(
             "directory": output_dir
         }
     
-    result = await run_in_threadpool(list_files)
+    result = await run_in_threadpool(list_files_sync)
     return JSONResponse(result)
