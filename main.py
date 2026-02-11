@@ -31,7 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(historical_json_router, prefix="/json", tags=["Historical JSON"])
-app.include_router(backtest_router, prefix="/backtest", tags=["Backtesting"])
+app.include_router(backtest_router, prefix="/api", tags=["Backtesting"])
 
 def get_ibkr_data():
     price = ib_client.get_realtime_price('MSFT')

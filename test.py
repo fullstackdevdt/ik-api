@@ -22,15 +22,33 @@ def arraySum(arr):
     return total
 
 
+# Define an empty dictionary
+my_dict = {}
 
-my_list = [1, 2, 3, 4, 5]
+# Define a dictionary with initial key-value pairs
+my_dict = {
+    "name": "John",
+    "age": 30,
+    "city": "New York",
+    2.1: ["ann", "griffin"]
+}
 
-my_array = array.array('i', [1, 2, 3, 4, 10])
+print(my_dict[2.1])
 
-sum1 = arraySum(my_array)
-sum2 = sum(my_list)
-print("Sum of array elements:", sum1)
-print("Sum of list elements:", sum2)
+my_dict["email"] = "john@example.com"
+
+print(my_dict["email"])
+
+
+
+# my_list = [1, 2, 3, 4, 5]
+
+# my_array = array.array('i', [1, 2, 3, 4, 10])
+
+# sum1 = arraySum(my_array)
+# sum2 = sum(my_list)
+# print("Sum of array elements:", sum1)
+# print("Sum of list elements:", sum2)
 
 
 # sum = addTwoValues(5,3)
