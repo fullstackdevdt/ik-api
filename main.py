@@ -13,6 +13,7 @@ from mock_data import MockIBKRService
 from services.IKBRClient import IBKRClient
 from historical_json import router as historical_json_router
 from backtest import router as backtest_router
+from bot_router import router as bot_router
 
 
 IB_PORT = 4002  # 4001 for live trading, 4002 for paper trading
@@ -32,6 +33,7 @@ app.add_middleware(
 
 app.include_router(historical_json_router, prefix="/json", tags=["Historical JSON"])
 app.include_router(backtest_router, prefix="/api", tags=["Backtesting"])
+app.include_router(bot_router, prefix="/bot", tags=["Bot Control"])
 
 def get_ibkr_data():
     price = ib_client.get_realtime_price('MSFT')

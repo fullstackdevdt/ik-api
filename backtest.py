@@ -7,6 +7,9 @@ import math
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
+from indicators import compute_all
+from regime import get_regime
+
 router = APIRouter()
 
 
@@ -435,6 +438,271 @@ class BacktestEngine:
     # ------------------------------------------------------------------
     # Standard single-split backtest (now with costs)
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Additional strategies
+    # ------------------------------------------------------------------
+
+    def rsi_mean_reversion_strategy(
+        self,
+        data: List[Dict],
+        rsi_buy: float = 30.0,
+        rsi_sell: float = 70.0,
+        require_bb_touch: bool = True,
+    ) -> List[Dict]:
+        """
+        RSI Mean Reversion:
+          BUY  when RSI < rsi_buy (oversold) AND optionally price ≤ lower Bollinger band.
+          SELL when RSI > rsi_sell (overbought) OR price crosses above BB middle band.
+        """
+        enriched = compute_all(data)
+        trades: List[Dict] = []
+        position = False
+
+        for i, bar in enumerate(enriched):
+            rsi = bar.get("rsi_14")
+            pct_b = bar.get("bb_pct_b")
+            if rsi is None or pct_b is None:
+                continue
+
+            if not position:
+                bb_condition = (pct_b <= 0.05) if require_bb_touch else True
+                if rsi < rsi_buy and bb_condition:
+                    trades.append({
+                        "date": bar["date"], "action": "BUY",
+                        "price": bar["close"], "rsi": round(rsi, 2), "bb_pct_b": pct_b,
+                    })
+                    position = True
+            else:
+                if rsi > rsi_sell or pct_b >= 0.5:
+                    trades.append({
+                        "date": bar["date"], "action": "SELL",
+                        "price": bar["close"], "rsi": round(rsi, 2), "bb_pct_b": pct_b,
+                    })
+                    position = False
+
+        return trades
+
+    def macd_momentum_strategy(
+        self,
+        data: List[Dict],
+        require_volume_spike: bool = True,
+        volume_ratio_threshold: float = 1.2,
+    ) -> List[Dict]:
+        """
+        MACD Momentum:
+          BUY  when MACD histogram turns positive (prev ≤ 0, curr > 0)
+               AND optionally volume_ratio > threshold (institutional participation).
+          SELL when MACD histogram turns negative (prev ≥ 0, curr < 0).
+        """
+        enriched = compute_all(data)
+        trades: List[Dict] = []
+        position = False
+
+        for i in range(1, len(enriched)):
+            bar = enriched[i]
+            prev = enriched[i - 1]
+            hist = bar.get("macd_histogram")
+            prev_hist = prev.get("macd_histogram")
+            vol_ratio = bar.get("volume_ratio")
+
+            if hist is None or prev_hist is None:
+                continue
+
+            vol_ok = (not require_volume_spike) or (vol_ratio is not None and vol_ratio >= volume_ratio_threshold)
+
+            if not position:
+                if prev_hist <= 0 and hist > 0 and vol_ok:
+                    trades.append({
+                        "date": bar["date"], "action": "BUY",
+                        "price": bar["close"],
+                        "macd_histogram": round(hist, 6),
+                        "volume_ratio": round(vol_ratio, 4) if vol_ratio else None,
+                    })
+                    position = True
+            else:
+                if prev_hist >= 0 and hist < 0:
+                    trades.append({
+                        "date": bar["date"], "action": "SELL",
+                        "price": bar["close"],
+                        "macd_histogram": round(hist, 6),
+                        "volume_ratio": round(vol_ratio, 4) if vol_ratio else None,
+                    })
+                    position = False
+
+        return trades
+
+    def combined_signal_strategy(
+        self,
+        data: List[Dict],
+        buy_threshold: float = 0.5,
+        sell_threshold: float = -0.3,
+        weights: Optional[Dict[str, float]] = None,
+    ) -> List[Dict]:
+        """
+        Composite score strategy: aggregates RSI, MACD histogram, Bollinger %B,
+        and Volume Ratio into a single score from -1 to +1.
+
+        Score > buy_threshold  → BUY
+        Score < sell_threshold → SELL (or exit long)
+
+        Default weights: rsi=0.3, macd=0.3, bb=0.2, volume=0.2
+        """
+        if weights is None:
+            weights = {"rsi": 0.3, "macd": 0.3, "bb": 0.2, "volume": 0.2}
+
+        enriched = compute_all(data)
+        trades: List[Dict] = []
+        position = False
+
+        for i, bar in enumerate(enriched):
+            rsi = bar.get("rsi_14")
+            hist = bar.get("macd_histogram")
+            pct_b = bar.get("bb_pct_b")
+            vol_ratio = bar.get("volume_ratio")
+
+            if rsi is None or hist is None or pct_b is None:
+                continue
+
+            # Normalise each indicator to [-1, +1]
+            rsi_score = (rsi - 50.0) / 50.0          # 0→-1, 50→0, 100→+1
+            # MACD histogram: cap at ±2 for normalisation
+            hist_max = 2.0
+            macd_score = max(-1.0, min(1.0, hist / hist_max)) if hist_max else 0.0
+            bb_score = (pct_b - 0.5) * 2.0           # 0→-1, 0.5→0, 1→+1
+            vol_score = min(1.0, (vol_ratio - 1.0)) if vol_ratio and vol_ratio > 0 else 0.0
+
+            score = (
+                weights.get("rsi", 0.3) * rsi_score
+                + weights.get("macd", 0.3) * macd_score
+                + weights.get("bb", 0.2) * bb_score
+                + weights.get("volume", 0.2) * vol_score
+            )
+
+            if not position and score > buy_threshold:
+                trades.append({
+                    "date": bar["date"], "action": "BUY",
+                    "price": bar["close"], "signal_score": round(score, 4),
+                })
+                position = True
+            elif position and score < sell_threshold:
+                trades.append({
+                    "date": bar["date"], "action": "SELL",
+                    "price": bar["close"], "signal_score": round(score, 4),
+                })
+                position = False
+
+        return trades
+
+    # ------------------------------------------------------------------
+    # Regime-filtered backtest
+    # ------------------------------------------------------------------
+
+    def regime_filtered_backtest(
+        self,
+        strategy_name: str = "combined_signal",
+        spy_closes: Optional[List[float]] = None,
+        vix_close: Optional[float] = None,
+        short_period: int = 10,
+        long_period: int = 30,
+        initial_capital: float = 10000.0,
+        commission_per_trade: float = 1.0,
+        slippage_pct: float = 0.0005,
+        allow_short: bool = False,
+    ) -> Dict:
+        """
+        Backtest with regime gating: trades only execute when the regime
+        permits them (e.g. skip longs during a bear macro regime).
+
+        When spy_closes is empty, macro regime defaults to NEUTRAL
+        (useful for offline backtests without a live IBKR connection).
+        """
+        spy = spy_closes or []
+        closes = [d["close"] for d in self.train_data]
+        highs = [d["high"] for d in self.train_data]
+        lows = [d["low"] for d in self.train_data]
+
+        regime = get_regime(
+            stock_closes=closes,
+            spy_closes=spy,
+            vix_close=vix_close,
+            stock_highs=highs,
+            stock_lows=lows,
+            allow_short=allow_short,
+        )
+
+        # Pick buy threshold based on macro confidence
+        threshold_map = {
+            "bull": 0.40,
+            "neutral": 0.55,
+            "caution": 0.70,
+            "bear": 0.90,  # Very hard to trigger a long in bear market
+        }
+        buy_threshold = threshold_map.get(regime.macro, 0.55)
+
+        # Select strategy
+        if strategy_name == "combined_signal":
+            train_trades = self.combined_signal_strategy(
+                self.train_data, buy_threshold=buy_threshold
+            )
+            val_trades = self.combined_signal_strategy(
+                self.validation_data, buy_threshold=buy_threshold
+            )
+        elif strategy_name == "rsi_mean_reversion":
+            train_trades = self.rsi_mean_reversion_strategy(self.train_data)
+            val_trades = self.rsi_mean_reversion_strategy(self.validation_data)
+        elif strategy_name == "macd_momentum":
+            train_trades = self.macd_momentum_strategy(self.train_data)
+            val_trades = self.macd_momentum_strategy(self.validation_data)
+        else:
+            train_trades = self.moving_average_crossover_strategy(
+                self.train_data, short_period, long_period, allow_short
+            )
+            val_trades = self.moving_average_crossover_strategy(
+                self.validation_data, short_period, long_period, allow_short
+            )
+
+        # Filter trades: remove longs if regime says skip, shorts if not allowed
+        def _filter(trades: List[Dict]) -> List[Dict]:
+            if regime.trade_direction == "none":
+                return []
+            if regime.trade_direction == "long":
+                return [t for t in trades if t["action"] not in ("SHORT", "COVER")]
+            return trades  # short direction: keep all
+
+        train_trades = _filter(train_trades)
+        val_trades = _filter(val_trades)
+
+        train_perf = self.calculate_performance(
+            train_trades, initial_capital, commission_per_trade, slippage_pct
+        )
+        val_perf = self.calculate_performance(
+            val_trades, initial_capital, commission_per_trade, slippage_pct
+        )
+
+        return {
+            "strategy": strategy_name,
+            "regime": {
+                "macro": regime.macro,
+                "micro": regime.micro,
+                "confidence": regime.confidence,
+                "trade_direction": regime.trade_direction,
+                "size_multiplier": regime.position_size_multiplier,
+                "buy_threshold_used": buy_threshold,
+            },
+            "data_summary": self.get_data_summary(),
+            "training_results": {"trades": train_trades, "performance": train_perf},
+            "validation_results": {"trades": val_trades, "performance": val_perf},
+            "summary": {
+                "train_return": train_perf["total_return"],
+                "validation_return": val_perf["total_return"],
+                "performance_difference": round(
+                    train_perf["total_return"] - val_perf["total_return"], 2
+                ),
+                "train_sharpe": train_perf["sharpe_ratio"],
+                "validation_sharpe": val_perf["sharpe_ratio"],
+            },
+        }
     def run_backtest(
         self,
         strategy_name: str = "moving_average_crossover",
@@ -695,4 +963,66 @@ async def optimize_strategy(
         }
 
     result = await run_in_threadpool(find_optimal_params)
+    return JSONResponse(result)
+
+
+@router.post("/regime_backtest/{file_id}")
+async def regime_backtest(
+    file_id: str = Path(..., description="File ID of saved historical data"),
+    strategy: str = Query(
+        "combined_signal",
+        description="Strategy: combined_signal | rsi_mean_reversion | macd_momentum | moving_average_crossover",
+    ),
+    train_split: float = Query(0.8, description="Training split fraction"),
+    initial_capital: float = Query(10000.0, description="Initial capital"),
+    commission: float = Query(1.0, description="Commission per trade"),
+    slippage: float = Query(0.0005, description="Slippage fraction"),
+    allow_short: bool = Query(False, description="Allow short selling"),
+    output_dir: str = Query("historical_data", description="Directory with JSON files"),
+):
+    """
+    Backtest with regime-aware gating.
+
+    Classifies the current market regime from the training window and adjusts
+    the signal entry threshold accordingly.  Trades that conflict with the
+    detected regime are filtered out before performance is measured.
+
+    Pass spy_closes via JSON body for a live macro regime; leave empty to use
+    the symbol's own data as a regime proxy (useful for offline backtests).
+    """
+
+    def execute():
+        if not os.path.exists(output_dir):
+            return {"error": "Historical data directory not found"}
+
+        matching = [f for f in os.listdir(output_dir) if f.endswith(f"_{file_id}.json")]
+        if not matching:
+            return {"error": f"No file found with ID {file_id}"}
+
+        with open(os.path.join(output_dir, matching[0]), "r") as fh:
+            file_data = json.load(fh)
+
+        data = file_data.get("data", [])
+        if not data:
+            return {"error": "No data found in file"}
+
+        engine = BacktestEngine(data, train_split=train_split)
+        results = engine.regime_filtered_backtest(
+            strategy_name=strategy,
+            spy_closes=[],   # No live SPY; macro inferred from symbol's own SMA
+            vix_close=None,
+            initial_capital=initial_capital,
+            commission_per_trade=commission,
+            slippage_pct=slippage,
+            allow_short=allow_short,
+        )
+        results["file_info"] = {
+            "file_id": file_id,
+            "symbol": file_data.get("symbol"),
+            "duration": file_data.get("duration"),
+            "bar_size": file_data.get("bar_size"),
+        }
+        return results
+
+    result = await run_in_threadpool(execute)
     return JSONResponse(result)

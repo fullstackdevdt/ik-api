@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 from datetime import datetime
-from ib_insync import IB, Stock, Contract, BarDataList, Order, Trade
+from ib_insync import IB, Index, Stock, Contract, BarDataList, Order, Trade
 import logging
 import matplotlib.pyplot as plt
 import os
@@ -104,6 +104,49 @@ class IBKRClient:
         with self.connection() as ib:
             contract = Stock(symbol.upper(), "SMART", "USD")
             return ib.reqHeadTimeStamp(contract, whatToShow=what_to_show, useRTH=True)
+
+    def get_spy_vix_context(self) -> Dict:
+        """
+        Fetch SPY daily closes (6 months) and latest VIX close.
+        Used by the regime engine for macro bull/bear classification.
+
+        Returns:
+            {"spy_closes": [float, ...], "vix_close": float | None}
+        """
+        spy_closes: List[float] = []
+        vix_close: Optional[float] = None
+
+        # SPY and VIX share the same connection to save a round-trip
+        with self.connection() as ib:
+            spy_contract = Stock("SPY", "SMART", "USD")
+            spy_bars = ib.reqHistoricalData(
+                spy_contract,
+                endDateTime="",
+                durationStr="6 M",
+                barSizeSetting="1 day",
+                whatToShow="TRADES",
+                useRTH=True,
+                formatDate=1,
+            )
+            spy_closes = [bar.close for bar in spy_bars] if spy_bars else []
+
+            try:
+                vix_contract = Index("VIX", "CBOE")
+                vix_bars = ib.reqHistoricalData(
+                    vix_contract,
+                    endDateTime="",
+                    durationStr="5 D",
+                    barSizeSetting="1 day",
+                    whatToShow="TRADES",
+                    useRTH=True,
+                    formatDate=1,
+                )
+                if vix_bars:
+                    vix_close = vix_bars[-1].close
+            except Exception:
+                logger.warning("VIX data unavailable; macro regime will use SPY-only signals")
+
+        return {"spy_closes": spy_closes, "vix_close": vix_close}
         
 
     def generate_historical_graph(
