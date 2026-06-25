@@ -1026,3 +1026,136 @@ async def regime_backtest(
 
     result = await run_in_threadpool(execute)
     return JSONResponse(result)
+
+
+@router.post("/oos_backtest/{file_id}")
+async def oos_backtest_file(
+    file_id: str = Path(..., description="File ID from historical_data/ (use a 5-10Y daily file)"),
+    is_pct: float = Query(0.6, description="In-Sample fraction, e.g. 0.6 = first 60% for training"),
+    initial_capital: float = Query(10000.0),
+    commission: float = Query(1.0),
+    slippage: float = Query(0.0005),
+    save_graph: bool = Query(True, description="Save equity curve PNG to graphs/"),
+    output_dir: str = Query("historical_data", description="Directory with JSON files"),
+):
+    """
+    Walk-Forward Holdout Backtest on a saved JSON file.
+
+    Splits data into IS (training) and OOS (blind simulation) windows,
+    runs 7 proven swing-trading strategies, optimises each on IS only,
+    then simulates the OOS period as if live.
+
+    Returns per-strategy IS + OOS metrics, a formatted comparison table,
+    and optionally saves an equity-curve PNG graph.
+
+    Recommended: use a 5-10 year daily file for meaningful results.
+    """
+    def execute():
+        if not os.path.exists(output_dir):
+            return {"error": "Historical data directory not found"}
+        matching = [f for f in os.listdir(output_dir) if f.endswith(f"_{file_id}.json")]
+        if not matching:
+            return {"error": f"No file found with ID {file_id}"}
+
+        with open(os.path.join(output_dir, matching[0]), "r") as fh:
+            file_data = json.load(fh)
+        data = file_data.get("data", [])
+        if not data:
+            return {"error": "No data found in file"}
+        if len(data) < 200:
+            return {"error": f"Need at least 200 bars for OOS backtest (got {len(data)}). "
+                            "Fetch 5-10 years of daily data first."}
+
+        from oos_backtest import OOSBacktest
+        symbol = file_data.get("symbol", "")
+        engine = OOSBacktest(data, is_pct=is_pct,
+                             initial_capital=initial_capital,
+                             commission=commission, slippage=slippage)
+        results = engine.run()
+
+        if save_graph:
+            os.makedirs("graphs", exist_ok=True)
+            graph_path = f"graphs/oos_{symbol.lower()}_{file_id}.png"
+            engine.generate_graph(results, graph_path, symbol=symbol)
+            results["graph_saved_to"] = graph_path
+
+        results["file_info"] = {
+            "file_id": file_id,
+            "symbol": symbol,
+            "duration": file_data.get("duration"),
+            "bar_size": file_data.get("bar_size"),
+        }
+        # Remove large equity arrays + raw trades from JSON to keep response lean
+        for strat_res in results.get("strategies", {}).values():
+            strat_res.pop("oos_equity_dates", None)
+            strat_res.pop("oos_equity_values", None)
+            strat_res.pop("oos_equity_daily", None)
+            strat_res.pop("oos_trades", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_dates", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_values", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_daily", None)
+        results.get("spy_benchmark", {}).pop("dates", None)
+        results.get("spy_benchmark", {}).pop("equity", None)
+        return results
+
+    result = await run_in_threadpool(execute)
+    return JSONResponse(result)
+
+
+@router.post("/oos_backtest_cached/{symbol}")
+async def oos_backtest_cached(
+    symbol: str = Path(..., description="Stock symbol (uses data_cache/ for 5Y daily bars)"),
+    is_pct: float = Query(0.6, description="In-Sample fraction"),
+    initial_capital: float = Query(10000.0),
+    commission: float = Query(1.0),
+    slippage: float = Query(0.0005),
+    save_graph: bool = Query(True),
+):
+    """
+    Walk-Forward Holdout Backtest using the data cache (5Y daily bars).
+
+    If the cache is empty for this symbol, it fetches 5Y of data from IBKR first
+    (this may take a moment on the first call).
+
+    Same output as /oos_backtest/{file_id} but uses the auto-managed cache
+    rather than a manually saved file.
+    """
+    def execute():
+        from data_cache import DataCache
+        from main import ib_client
+        cache = DataCache(ib_client)
+        data = cache.get(symbol.upper(), "1 day")
+
+        if not data:
+            return {"error": f"No cached data for {symbol}. "
+                            "Call POST /bot/warm_cache first, or ensure IBKR is connected."}
+        if len(data) < 200:
+            return {"error": f"Only {len(data)} bars cached — need ≥200 for OOS backtest."}
+
+        from oos_backtest import OOSBacktest
+        engine = OOSBacktest(data, is_pct=is_pct,
+                             initial_capital=initial_capital,
+                             commission=commission, slippage=slippage)
+        results = engine.run()
+
+        if save_graph:
+            os.makedirs("graphs", exist_ok=True)
+            graph_path = f"graphs/oos_{symbol.lower()}_cached.png"
+            engine.generate_graph(results, graph_path, symbol=symbol)
+            results["graph_saved_to"] = graph_path
+
+        results["source"] = f"cache/1_day ({len(data)} bars)"
+        for strat_res in results.get("strategies", {}).values():
+            strat_res.pop("oos_equity_dates", None)
+            strat_res.pop("oos_equity_values", None)
+            strat_res.pop("oos_equity_daily", None)
+            strat_res.pop("oos_trades", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_dates", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_values", None)
+        results.get("strategies", {}).get("buy_and_hold", {}).pop("oos_equity_daily", None)
+        results.get("spy_benchmark", {}).pop("dates", None)
+        results.get("spy_benchmark", {}).pop("equity", None)
+        return results
+
+    result = await run_in_threadpool(execute)
+    return JSONResponse(result)
